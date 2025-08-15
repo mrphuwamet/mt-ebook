@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Flipbook (stable + deep-link + lazy + pinch/pan/zoom)</title>
+<title>Flipbook — mobile pinch & pan, desktop edge-drag</title>
+
 <style>
   :root { --bg:#0b0b0f; --thumbH:110px; }
   html,body { margin:0; height:100%; background:var(--bg); overflow:hidden; }
   #stage { position:fixed; inset:0; display:grid; place-items:center; }
   #book  { visibility:hidden; box-shadow:0 16px 52px rgba(0,0,0,.55); user-select:none; touch-action:none; will-change:transform; }
-  .page img { user-drag:none; -webkit-user-drag:none; user-select:none; -webkit-user-select:none; display:block; width:100%; height:100%; }
+  .page img { display:block; width:100%; height:100%; user-drag:none; -webkit-user-drag:none; user-select:none; -webkit-user-select:none; }
 
   /* HUD: Zoom */
   .hud{
@@ -29,15 +30,21 @@
     backdrop-filter:blur(8px); box-shadow:0 6px 20px rgba(0,0,0,.35); pointer-events:none; z-index:6;
   }
 
-  /* ปุ่มซ้าย/ขวา (ลอยติดขอบหนังสือเสมอ) */
+  /* ปุ่มซ้าย/ขวา */
   .navbtn{
     position:fixed; width:44px; height:44px; border-radius:50%;
-    display:grid; place-items:center; z-index:6; user-select:none; cursor:pointer;
+    display:grid; place-items:center; z-index:8; user-select:none; cursor:pointer;
     background:rgba(0,0,0,.55); color:#fff; border:1px solid rgba(255,255,255,.18);
     box-shadow:0 8px 24px rgba(0,0,0,.35);
   }
-  #btnPrev{ }
-  #btnNext{ }
+  /* เดสก์ท็อป: จะถูกจัดให้ชิดขอบหนังสือด้วย JS */
+  /* มือถือ: ติดกลางจอเสมอ */
+  body.mobile-arrows #btnPrev,
+  body.mobile-arrows #btnNext{
+    top:50%; transform:translateY(-50%); 
+  }
+  body.mobile-arrows #btnPrev{ left:10px; right:auto; }
+  body.mobile-arrows #btnNext{ right:10px; left:auto; }
 
   /* หน้า + ลิงก์ */
   .page{ position:relative; }
@@ -52,13 +59,14 @@
     backdrop-filter:blur(8px); box-shadow:0 -6px 24px rgba(0,0,0,.35);
     display:flex; align-items:center; justify-content:center; transform:translateY(0); transition:transform .25s ease;
   }
-  #thumbsWrap{ max-width:min(92vw, 1280px); overflow-x:auto; padding:10px 12px; }
+  #thumbsWrap{ max-width:min(92vw, 1280px); overflow-x:auto; padding:10px 12px; -webkit-overflow-scrolling:touch; }
   #thumbs{ display:flex; gap:10px; justify-content:center; }
-  .thumb{ height:84px; aspect-ratio:210/297; border-radius:8px; overflow:hidden; box-shadow:0 6px 18px rgba(0,0,0,.35);
+  .thumb{ flex:0 0 auto; height:84px; aspect-ratio:210/297; border-radius:8px; overflow:hidden; box-shadow:0 6px 18px rgba(0,0,0,.35);
     opacity:.9; border:1px solid rgba(255,255,255,.12); transition:transform .15s ease, opacity .15s ease, box-shadow .15s ease;
     cursor:pointer; background:#000; }
   .thumb img{ display:block; height:100%; }
   .thumb.active{ outline:2px solid #fff; opacity:1; }
+  @media (pointer:coarse){ .thumb{ height:72px; } }
 
   #thumbToggle{ position:fixed; right:14px; background:rgba(0,0,0,.55); color:#fff; border:1px solid rgba(255,255,255,.18);
     padding:8px 12px; border-radius:999px; cursor:pointer; user-select:none; box-shadow:0 6px 18px rgba(0,0,0,.35); z-index:6;
@@ -98,17 +106,19 @@
     <button id="zoomFit">Fit</button>
   </div>
 
-  <!-- ปุ่มนำทาง (จะถูกจัดตำแหน่งชิดขอบหนังสือด้วย JS) -->
+  <!-- ปุ่มนำทาง -->
   <div class="navbtn" id="btnPrev" title="ก่อนหน้า">⟵</div>
   <div class="navbtn" id="btnNext" title="ถัดไป">⟶</div>
 
   <div id="pager">– / –</div>
 
+  <!-- Thumbnails -->
   <div id="dock">
     <div id="thumbToggle">ซ่อนแถบรูป ↓</div>
     <div id="thumbsBar"><div id="thumbsWrap"><div id="thumbs"></div></div></div>
   </div>
 
+  <!-- Loading -->
   <div id="loading">
     <div class="loadbox">
       <div class="spinner"></div>
@@ -132,14 +142,18 @@
   const loadMsg = document.getElementById("loadMsg");
   const loadErr = document.getElementById("loadErr");
 
-  /* ===== Deep-link ===== */
+  /* --- detect mobile for arrow style --- */
+  const isTouch = matchMedia("(pointer: coarse)").matches;
+  if (isTouch) document.body.classList.add("mobile-arrows");
+
+  /* ===== Deep link ===== */
   function getDeepLinkPage(){
     const url = new URL(location.href);
     const q = url.searchParams.get("page");
-    const hashMatch = location.hash.match(/page=(\d+)/i);
-    const v = q || (hashMatch ? hashMatch[1] : null);
+    const h = location.hash.match(/page=(\d+)/i);
+    const v = q || (h ? h[1] : null);
     const n = v ? parseInt(v,10) : NaN;
-    return Number.isFinite(n) && n > 0 ? n : 1;
+    return Number.isFinite(n) && n>0 ? n : 1;
   }
   function setHashPage(p){ location.hash = "page="+p; }
   window.addEventListener("hashchange", ()=>{ const p=getDeepLinkPage(); if(p) flip.turn("page", p); });
@@ -149,7 +163,7 @@
   function ensureAudio(){ if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); } if(audioCtx.state==="suspended") audioCtx.resume(); }
   function playFlip(){
     if(!audioCtx) return;
-    const dur=.26, now=audioCtx.currentTime, sr=audioCtx.sampleRate, N=Math.floor(sr*dur);
+    const dur=.25, now=audioCtx.currentTime, sr=audioCtx.sampleRate, N=Math.floor(sr*dur);
     const buf=audioCtx.createBuffer(1,N,sr), d=buf.getChannelData(0);
     for(let i=0;i<N;i++){ const t=i/sr, env=Math.exp(-6*t), n=(Math.random()*2-1)*.55; d[i]=n*env; }
     const src=audioCtx.createBufferSource(); src.buffer=buf;
@@ -167,12 +181,12 @@
     total = pdf.numPages;
   }catch(err){
     loadErr.style.display='block';
-    loadErr.textContent = "โหลดไฟล์ PDF ไม่ได้: " + (err?.message || err);
+    loadErr.textContent = "โหลดไฟล์ PDF ไม่ได้: " + (err?.message||err);
     console.error(err); return;
   }
   const targetPage = Math.min(Math.max(getDeepLinkPage(),1), total);
 
-  /* ===== Thumbnails placeholders ===== */
+  /* ===== Thumbs ===== */
   for(let i=1;i<=total;i++){
     const d=document.createElement("div"); d.className="thumb"; d.dataset.page=i;
     d.addEventListener("click", ()=> flip.turn("page", i));
@@ -194,10 +208,10 @@
   const zoomPct = document.getElementById("zoomPct");
   let baseW=1000, baseH=650, zoom=1;
   let panX=0, panY=0;
-
   const STEP=.1, MIN=.5, MAX=3;
-  const PAN_MARGIN = 80;
-  const PAN_OVERSCROLL = 0.20;
+
+  const PAN_MARGIN = 80;        // กันขอบ HUD
+  const PAN_OVERSCROLL = 0.20;  // เลื่อนเกินขอบได้อีกนิด
 
   function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
 
@@ -238,19 +252,19 @@
   document.getElementById("zoomFit").onclick=()=>{ fitToViewport(); };
   fitToViewport();
 
-  /* ===== Gestures: swipe turn + pinch zoom + free pan + edge-turn ===== */
-  const EDGE_TURN_ZONE = 0.12;
+  /* ===== Gestures ===== */
+  const EDGE_TURN_ZONE = 0.12;   // desktop only
   const SWIPE_TH = 40;
 
   const activePointers=new Map();
   let isPinching=false, startDist=0, startZoom=zoom, lastCentroid=null;
   let swipeStart=null;
 
-  // pan ด้วยนิ้วเดียวเมื่อซูม
+  // desktop: single-finger drag pan when zoomed
   let isDragPan=false, dragId=null, dragStart=null, dragPanStart=null;
-  // เมาส์กลางแพน
+  // desktop: middle-mouse pan
   let isMidPan=false, midPanId=null, midStart=null, midPanStart=null;
-  // edge-drag เพื่อเปลี่ยนหน้า เมื่อซูม
+  // desktop: edge drag to turn when zoomed
   let edgeDragId=null, edgeSide=null, edgeStart=null;
 
   function dist(a,b){ return Math.hypot(b.x-a.x, b.y-a.y); }
@@ -264,35 +278,43 @@
   }
 
   function onPointerDown(e){
-    // เมาส์กลางค้าง = แพน
-    if (e.button===1){
+    if (e.target.closest('.link-layer a')) return;
+
+    // desktop: middle mouse = pan
+    if (!isTouch && e.button===1){
       isMidPan=true; midPanId=e.pointerId;
       midStart={x:e.clientX,y:e.clientY}; midPanStart={x:panX,y:panY};
       flip[0].setPointerCapture(e.pointerId); flip[0].style.cursor="grabbing"; return;
     }
-    if (e.target.closest('.link-layer a')) return;
 
     flip[0].setPointerCapture(e.pointerId);
+    activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
 
+    if (isTouch){
+      // mobile: one finger = swipe turn, two fingers = pinch+pan
+      if (activePointers.size===1){
+        swipeStart={x:e.clientX,y:e.clientY};
+      }else if (activePointers.size===2){
+        const [p1,p2]=[...activePointers.values()];
+        isPinching=true; startDist=dist(p1,p2); startZoom=zoom; lastCentroid=centroid(activePointers);
+        swipeStart=null;
+      }
+      return;
+    }
+
+    // desktop:
     if (zoom > 1.02){
       const side = edgeFromX(e.clientX);
-      if (side){ // เริ่ม edge-drag เพื่อเปลี่ยนหน้า
-        edgeDragId=e.pointerId; edgeSide=side; edgeStart={x:e.clientX,y:e.clientY};
-        return;
-      }
-      // นอกขอบ → นิ้วเดียว/เมาส์ซ้าย = แพน
+      if (side){ edgeDragId=e.pointerId; edgeSide=side; edgeStart={x:e.clientX,y:e.clientY}; return; }
       if (e.button===0 && !isDragPan){
         isDragPan=true; dragId=e.pointerId;
         dragStart={x:e.clientX,y:e.clientY}; dragPanStart={x:panX,y:panY};
         return;
       }
     }
-
-    // โหมด swipe เปลี่ยนหน้า (ซูม ≤ 100%)
-    activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if(activePointers.size===1){
+    if (activePointers.size===1){
       swipeStart={x:e.clientX,y:e.clientY};
-    } else if(activePointers.size===2){
+    } else if (activePointers.size===2){
       const [p1,p2]=[...activePointers.values()];
       isPinching=true; startDist=dist(p1,p2); startZoom=zoom; lastCentroid=centroid(activePointers);
       isDragPan=false; dragId=null; edgeDragId=null; edgeSide=null;
@@ -300,48 +322,51 @@
   }
 
   function onPointerMove(e){
-    // เมาส์กลางแพน
-    if (isMidPan && e.pointerId===midPanId){
+    // desktop: middle mouse pan
+    if (!isTouch && isMidPan && e.pointerId===midPanId){
       panX = midPanStart.x + (e.clientX - midStart.x);
       panY = midPanStart.y + (e.clientY - midStart.y);
       applyPan(); return;
     }
-    // นิ้วเดียวแพนเมื่อซูม
-    if (isDragPan && e.pointerId===dragId){
+    // desktop: single-finger pan
+    if (!isTouch && isDragPan && e.pointerId===dragId){
       panX = dragPanStart.x + (e.clientX - dragStart.x);
       panY = dragPanStart.y + (e.clientY - dragStart.y);
       applyPan(); return;
     }
-    // edge-drag ไม่ต้องทำระหว่างลาก
-    if (edgeDragId && e.pointerId===edgeDragId){ return; }
+    // desktop: edge drag - nothing during move
+    if (!isTouch && edgeDragId && e.pointerId===edgeDragId) return;
 
     if(!activePointers.has(e.pointerId)) return;
     activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
 
+    // both: two-finger pinch + pan
     if (isPinching && activePointers.size>=2){
       const [p1,p2]=[...activePointers.values()];
       const factor=dist(p1,p2)/startDist;
-      zoom = clamp(startZoom*factor, MIN, MAX);
+      const newZoom = clamp(startZoom*factor, MIN, MAX);
+      const realFactor = newZoom / zoom;
+      // keep centroid anchored while zooming
       const c=centroid(activePointers);
-      panX += (c.x - lastCentroid.x);
-      panY += (c.y - lastCentroid.y);
+      panX += (c.x - (lastCentroid?lastCentroid.x:c.x));
+      panY += (c.y - (lastCentroid?lastCentroid.y:c.y));
+      zoom = newZoom;
       lastCentroid=c;
-      applyZoom();
+      applyZoom(); // includes applyPan()
     }
   }
 
   function onPointerUpLike(e){
-    if (isMidPan && e.pointerId===midPanId){
-      isMidPan=false; midPanId=null; midStart=null; midPanStart=null; flip[0].style.cursor=""; return;
-    }
-    if (isDragPan && e.pointerId===dragId){
-      isDragPan=false; dragId=null; dragStart=null; dragPanStart=null; return;
-    }
-    if (edgeDragId && e.pointerId===edgeDragId){
-      const dx = e.clientX - edgeStart.x;
-      if (edgeSide==="left"  && dx > SWIPE_TH) flip.turn("previous");
-      if (edgeSide==="right" && -dx > SWIPE_TH) flip.turn("next");
-      edgeDragId=null; edgeSide=null; edgeStart=null; return;
+    // desktop: finish middle mouse / drag pan / edge drag
+    if (!isTouch){
+      if (isMidPan && e.pointerId===midPanId){ isMidPan=false; midPanId=null; midStart=null; midPanStart=null; flip[0].style.cursor=""; }
+      if (isDragPan && e.pointerId===dragId){ isDragPan=false; dragId=null; dragStart=null; dragPanStart=null; }
+      if (edgeDragId && e.pointerId===edgeDragId){
+        const dx = e.clientX - edgeStart.x;
+        if (edgeSide==="left"  && dx > SWIPE_TH) flip.turn("previous");
+        if (edgeSide==="right" && -dx > SWIPE_TH) flip.turn("next");
+        edgeDragId=null; edgeSide=null; edgeStart=null;
+      }
     }
 
     if(!activePointers.has(e.pointerId)) return;
@@ -349,6 +374,16 @@
     activePointers.delete(e.pointerId);
     if(activePointers.size<2) isPinching=false;
 
+    // mobile: one-finger swipe always turns page (any zoom)
+    if (isTouch && start){
+      const dx=end.x-start.x, dy=end.y-start.y;
+      if (Math.abs(dx)>Math.abs(dy) && Math.abs(dx)>SWIPE_TH){
+        if (dx<0) flip.turn("next"); else flip.turn("previous");
+      }
+      swipeStart=null; return;
+    }
+
+    // desktop: swipe turn only when not zoomed
     if(start && !isPinching && zoom<=1.02){
       const dx=end.x-start.x, dy=end.y-start.y;
       if (Math.abs(dx)>Math.abs(dy) && Math.abs(dx)>SWIPE_TH){
@@ -364,33 +399,29 @@
   flip[0].addEventListener("pointercancel", onPointerUpLike);
   flip[0].addEventListener("lostpointercapture", onPointerUpLike);
 
-  // ล้อเมาส์ / ทัชแพด: ซูมตามตำแหน่งเมาส์ (Shift = แพน)
+  // desktop wheel: zoom at cursor / Shift+wheel = pan
   function zoomAtPointer(clientX, clientY, factor){
     const newZoom = clamp(zoom * factor, MIN, MAX);
-    const realFactor = newZoom / zoom;
+    const real = newZoom / zoom;
     const rect = flip[0].getBoundingClientRect();
     const px = clientX - (rect.left + rect.width/2);
     const py = clientY - (rect.top  + rect.height/2);
-    panX -= px * (realFactor - 1);
-    panY -= py * (realFactor - 1);
+    panX -= px * (real - 1);
+    panY -= py * (real - 1);
     zoom = newZoom;
     applyZoom();
   }
-  flip[0].addEventListener("wheel", (e)=>{
-    if (!e.shiftKey){
-      e.preventDefault();
-      const factor = Math.exp(-e.deltaY * 0.0015);
-      zoomAtPointer(e.clientX, e.clientY, factor);
-    }else{
-      e.preventDefault();
-      panX -= e.deltaX; panY -= e.deltaY; applyPan();
-    }
-  }, {passive:false});
+  if (!isTouch){
+    flip[0].addEventListener("wheel", (e)=>{
+      if (!e.shiftKey){ e.preventDefault(); zoomAtPointer(e.clientX, e.clientY, Math.exp(-e.deltaY*0.0015)); }
+      else{ e.preventDefault(); panX -= e.deltaX; panY -= e.deltaY; applyPan(); }
+    }, {passive:false});
+  }
 
   window.addEventListener("resize", applyPan);
   window.addEventListener("orientationchange", ()=> setTimeout(applyPan, 50));
 
-  /* ===== Lazy render: addPage + Map + queue ===== */
+  /* ===== Lazy render: addPage + Map ===== */
   const pageNodes=new Map(), rendered=new Set(), linkCache=new Map(), thumbReady=new Set();
 
   function createInnerPageNode(){
@@ -487,27 +518,27 @@
 
   thumbToggle.onclick=()=>{ const c=dock.classList.toggle("collapsed"); thumbToggle.textContent=c?"แสดงแถบรูป ↑":"ซ่อนแถบรูป ↓"; positionNavButtons(); };
 
-  // จัดปุ่มให้ "ชิดขอบหนังสือ" เสมอ
+  // เดสก์ท็อป: ปุ่มชิดขอบหนังสือเสมอ / มือถือ: ใช้ CSS fixed อยู่แล้ว
   function positionNavButtons(){
+    if (document.body.classList.contains("mobile-arrows")) return;
     const rect = flip[0].getBoundingClientRect();
-    const prev = btnPrev, next = btnNext;
     const GAP = 12;
     const cy = rect.top + rect.height / 2;
-    prev.style.left = (rect.left - GAP - prev.offsetWidth) + "px";
-    next.style.left = (rect.right + GAP) + "px";
-    prev.style.top  = cy + "px";
-    next.style.top  = cy + "px";
+    btnPrev.style.left = (rect.left - GAP - btnPrev.offsetWidth) + "px";
+    btnNext.style.left = (rect.right + GAP) + "px";
+    btnPrev.style.top  = cy + "px";
+    btnNext.style.top  = cy + "px";
   }
   window.addEventListener("resize", positionNavButtons);
   window.addEventListener("orientationchange", ()=> setTimeout(positionNavButtons, 50));
 
-  /* ===== Open target page first, then background render ===== */
+  /* ===== Open target first, then background render ===== */
   loadMsg.textContent = `กำลังโหลดหน้า ${targetPage} / ${total}`;
   await ensurePage(targetPage);
   flip.turn("page", targetPage);
   updatePager(targetPage); setActiveThumb(targetPage); lazyAround(targetPage);
   loading.style.display="none"; flip.css("visibility","visible");
-  positionNavButtons(); // เรียกครั้งแรก
+  positionNavButtons();
   renderAllBackground(targetPage);
 
   /* ===== Helpers ===== */
